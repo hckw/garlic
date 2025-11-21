@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Data artifacts
+data/uploads/
+data/annotated/
+data/dataset/
+
+# Model artifacts
+models/
+
+# Streamlit cache
+.streamlit/
+
+# VSCode / editor files
+.vscode/
+
+# MacOS metadata
+.DS_Store
+

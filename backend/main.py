@@ -4,14 +4,17 @@ import asyncio
 import base64
 from dataclasses import dataclass, field
 from datetime import datetime
+import os
 from pathlib import Path
 from threading import Lock
-from typing import Dict, Literal, Optional
+from typing import Dict, Literal, Optional, List
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image, ImageDraw, ImageFont
+
+from .model.inference import GarlicDetector
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 UPLOAD_DIR = ROOT_DIR / "data" / "uploads"
@@ -30,6 +33,7 @@ class ImageRecord:
     annotated_path: Optional[Path] = None
     reject_count: int = 0
     history: list[str] = field(default_factory=list)
+    detections: List[Dict] = field(default_factory=list)
 
 
 class ImageStore:
@@ -57,6 +61,10 @@ class ImageStore:
 
 store = ImageStore()
 app = FastAPI(title="Garlic Detector API", version="0.1.0")
+detector = GarlicDetector(
+    weights_path=os.getenv("GARLIC_MODEL_WEIGHTS"),
+    confidence_threshold=float(os.getenv("GARLIC_CONFIDENCE_THRESHOLD", "0.5")),
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -83,6 +91,7 @@ class ResultResponse(BaseModel):
     image_id: str
     status: str
     annotated_image_base64: str
+    detections: List[Dict]
 
 
 class FeedbackRequest(BaseModel):
@@ -147,15 +156,59 @@ def _annotate_image(original_path: Path, annotated_path: Path) -> None:
     image.save(annotated_path)
 
 
-async def _simulate_processing(image_id: str, record: ImageRecord) -> None:
+def _annotate_with_detections(original_path: Path, annotated_path: Path, detections: List[Dict]) -> None:
+    if not detections:
+        _annotate_image(original_path, annotated_path)
+        return
+
+    image = Image.open(original_path).convert("RGB")
+    draw = ImageDraw.Draw(image, "RGBA")
+
+    try:
+        font = ImageFont.truetype("Arial.ttf", size=24)
+    except OSError:
+        font = ImageFont.load_default()
+
+    for detection in detections:
+        bbox = detection["bbox"]
+        coords = [
+            bbox["x_min"],
+            bbox["y_min"],
+            bbox["x_max"],
+            bbox["y_max"],
+        ]
+        draw.rectangle(coords, outline=(34, 197, 94), width=4)
+        draw.rectangle(coords, fill=(34, 197, 94, 40))
+
+        label = detection["label"]
+        confidence = detection["confidence"] * 100
+        text = f"{label} {confidence:.1f}%"
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        bg_coords = [
+            coords[0],
+            max(0, coords[1] - (text_bbox[3] - text_bbox[1]) - 6),
+            coords[0] + (text_bbox[2] - text_bbox[0]) + 12,
+            coords[1] - 2,
+        ]
+        draw.rectangle(bg_coords, fill=(15, 23, 42, 200))
+        draw.text((bg_coords[0] + 6, bg_coords[1] + 2), text, font=font, fill=(255, 255, 255))
+
+    image.save(annotated_path)
+
+
+async def _process_with_model(image_id: str, record: ImageRecord) -> None:
     annotated_path = ANNOTATED_DIR / f"{Path(record.original_path).stem}_annotated.png"
     store.update(image_id, status="processing", history=record.history + ["processing"])
-    await asyncio.sleep(1.0)
-    _annotate_image(record.original_path, annotated_path)
+
+    detection_results = await asyncio.to_thread(detector.detect, record.original_path)
+    detection_dicts = [result.to_dict() for result in detection_results]
+    _annotate_with_detections(record.original_path, annotated_path, detection_dicts)
+
     store.update(
         image_id,
         status="completed",
         annotated_path=annotated_path,
+        detections=detection_dicts,
         history=record.history + ["processing", "completed"],
     )
 
@@ -184,7 +237,7 @@ async def process_image(image_id: str):
     if record.status == "completed":
         return ProcessResponse(image_id=image_id, status=record.status, message="Already processed")
 
-    await _simulate_processing(image_id, record)
+    await _process_with_model(image_id, record)
     return ProcessResponse(image_id=image_id, status="completed", message="Processing finished")
 
 
@@ -200,7 +253,12 @@ async def get_result(image_id: str):
 
     with record.annotated_path.open("rb") as fp:
         encoded = base64.b64encode(fp.read()).decode("utf-8")
-    return ResultResponse(image_id=image_id, status=record.status, annotated_image_base64=encoded)
+    return ResultResponse(
+        image_id=image_id,
+        status=record.status,
+        annotated_image_base64=encoded,
+        detections=record.detections,
+    )
 
 
 @app.post("/api/feedback", response_model=FeedbackResponse)
