@@ -2,7 +2,6 @@
 [build]
   publish = "frontend/static"
   command = "echo 'Static site - no build needed'"
-  ignore = "requirements.txt|runtime.txt|backend/|*.py"
 
 # Redirect API calls to your backend (update with your actual backend URL)
 [[redirects]]
