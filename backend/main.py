@@ -222,7 +222,7 @@ async def _process_with_model(image_id: str, record: ImageRecord) -> None:
     # Ensure annotated directory exists
     ANNOTATED_DIR.mkdir(parents=True, exist_ok=True)
     
-    store.update(image_id, status="processing", history=record.history + ["processing"])
+    # Status is already set to "processing" by the endpoint, so we don't need to update it here
 
     # Initialize detector if not already initialized
     global detector
