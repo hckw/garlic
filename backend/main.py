@@ -298,23 +298,34 @@ async def process_image(image_id: str):
     if record.status == "completed":
         return ProcessResponse(image_id=image_id, status=record.status, message="Already processed")
 
+    # If already processing, return current status
+    if record.status == "processing":
+        return ProcessResponse(image_id=image_id, status="processing", message="Processing in progress...")
+
     # Verify image file exists
     if not record.original_path.exists():
         raise HTTPException(status_code=400, detail=f"Image file not found: {record.original_path}")
 
+    # Start processing in background (non-blocking)
+    # Return immediately with "processing" status
     try:
-        await _process_with_model(image_id, record)
-        return ProcessResponse(image_id=image_id, status="completed", message="Processing finished")
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
+        # Update status to processing before starting background task
+        store.update(image_id, status="processing", history=record.history + ["processing"])
+        
+        # Use asyncio.create_task to run in background
+        asyncio.create_task(_process_with_model(image_id, record))
+        return ProcessResponse(
+            image_id=image_id, 
+            status="processing", 
+            message="Processing started. Poll /api/result/{image_id} for completion."
+        )
     except Exception as e:
         # Catch any unexpected errors to prevent crashes
-        print(f"❌ Unexpected error in process_image: {e}")
+        print(f"❌ Unexpected error starting process_image: {e}")
         import traceback
         traceback.print_exc()
         store.update(image_id, status="uploaded", history=record.history + ["processing", "error"])
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to start processing: {str(e)}")
 
 
 @app.get("/api/result/{image_id}", response_model=ResultResponse)

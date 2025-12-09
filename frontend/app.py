@@ -12,12 +12,15 @@ import streamlit as st
 # Get API URL from environment variable
 # For local development: defaults to http://localhost:8000
 # For production: MUST be set to your Railway backend URL in Streamlit Cloud settings
-API_BASE_URL = os.getenv("GARLIC_API_URL", "http://localhost:8000")
+_api_url = os.getenv("GARLIC_API_URL", "http://localhost:8000")
+# Remove trailing slash to avoid double slashes in URLs
+API_BASE_URL = _api_url.rstrip("/")
 
 
 def api_post(endpoint: str, files=None, json=None) -> dict:
     url = f"{API_BASE_URL}{endpoint}"
-    response = requests.post(url, files=files, json=json, timeout=60)
+    # Process endpoint returns immediately, so short timeout is fine
+    response = requests.post(url, files=files, json=json, timeout=30)
     response.raise_for_status()
     return response.json()
 
@@ -125,22 +128,66 @@ def show_step_one() -> Optional[bytes]:
 
 def handle_step_two() -> None:
     st.subheader("Step 2 · Send to the AI model")
-    st.write("We are processing your image. This may take a few seconds.")
+    st.write("We are processing your image. This may take a minute or two, especially on first use (model loading).")
 
+    # Start processing (returns immediately)
+    if st.session_state.get("processing_started") is None:
+        try:
+            process_response = start_processing(st.session_state["image_id"])
+            st.session_state["processing_status"] = process_response["status"]
+            st.session_state["processing_started"] = True
+            st.info("Processing started. Waiting for completion...")
+        except requests.RequestException as exc:
+            st.error(f"Failed to start processing: {exc}")
+            return
+
+    # Poll for completion
     progress = st.progress(0)
-    for pct in range(0, 101, 5):
-        time.sleep(0.05)
-        progress.progress(pct)
-
-    process_response = start_processing(st.session_state["image_id"])
-    st.session_state["processing_status"] = process_response["status"]
-
-    if process_response["status"] == "completed":
-        st.success("Processing finished. Moving to results.")
-        st.session_state["step"] = 3
-        st.rerun()
-    else:
-        st.info(process_response["message"])
+    status_text = st.empty()
+    
+    max_attempts = 60  # Poll for up to 5 minutes (60 * 5 seconds)
+    poll_interval = 5  # Check every 5 seconds
+    
+    for attempt in range(max_attempts):
+        try:
+            # Check result endpoint to see if processing is complete
+            result = api_get(f"/api/result/{st.session_state['image_id']}")
+            
+            if result["status"] == "completed":
+                progress.progress(100)
+                status_text.success("✅ Processing completed!")
+                st.session_state["processing_status"] = "completed"
+                st.session_state["step"] = 3
+                st.session_state["processing_started"] = None  # Reset for next time
+                time.sleep(1)  # Brief pause to show success message
+                st.rerun()
+                return
+            elif result["status"] == "processing":
+                # Still processing, update progress
+                progress_pct = min(90, 10 + (attempt * 2))  # Progress from 10% to 90%
+                progress.progress(progress_pct)
+                status_text.info(f"⏳ Processing... (attempt {attempt + 1}/{max_attempts})")
+            else:
+                # Error or other status
+                status_text.warning(f"Status: {result['status']}")
+        except requests.HTTPError as e:
+            if e.response.status_code == 400:
+                # Not ready yet (400 = "Image is not ready yet")
+                progress_pct = min(90, 10 + (attempt * 2))
+                progress.progress(progress_pct)
+                status_text.info(f"⏳ Processing... (attempt {attempt + 1}/{max_attempts})")
+            else:
+                status_text.error(f"Error checking status: {e}")
+                break
+        except requests.RequestException as exc:
+            status_text.error(f"Connection error: {exc}")
+            break
+        
+        time.sleep(poll_interval)
+    
+    # If we get here, we've exhausted attempts
+    progress.progress(100)
+    status_text.error("⏱️ Processing is taking longer than expected. Please refresh and try again.")
 
 
 def handle_step_three() -> None:
