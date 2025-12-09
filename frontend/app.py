@@ -40,6 +40,7 @@ def init_session_state() -> None:
         "reject_count": 0,
         "last_feedback_message": "",
         "reject_popup_message": "",
+        "reject_popup_timestamp": None,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -186,6 +187,7 @@ def handle_step_four() -> None:
             else:
                 st.warning(st.session_state["last_feedback_message"])
                 st.session_state["reject_popup_message"] = response["message"]
+                st.session_state["reject_popup_timestamp"] = time.time()
                 reset_to_step(1)
                 st.rerun()
 
@@ -199,12 +201,32 @@ def main() -> None:
     st.caption("Guide your garlic images through the AI detection pipeline.")
 
     init_session_state()
-    if st.session_state.get("reject_popup_message"):
-        st.toast(
-            st.session_state["reject_popup_message"],
-            icon="⚠️",
-        )
-        st.session_state["reject_popup_message"] = ""
+    
+    # Show popup message for 10 seconds
+    if st.session_state.get("reject_popup_message") and st.session_state.get("reject_popup_timestamp"):
+        current_time = time.time()
+        elapsed = current_time - st.session_state["reject_popup_timestamp"]
+        
+        if elapsed < 10:
+            # Show the popup message with remaining time and close button
+            remaining = int(10 - elapsed)
+            st.error(
+                f"{st.session_state['reject_popup_message']} (Auto-closing in {remaining}s)",
+                icon="⚠️"
+            )
+            # Add close button
+            if st.button("Close", key="close_popup"):
+                st.session_state["reject_popup_message"] = ""
+                st.session_state["reject_popup_timestamp"] = None
+                st.rerun()
+            else:
+                # Rerun every second to update the countdown
+                time.sleep(1)
+                st.rerun()
+        else:
+            # 10 seconds passed, clear the message
+            st.session_state["reject_popup_message"] = ""
+            st.session_state["reject_popup_timestamp"] = None
     step_indicator(st.session_state["step"])
 
     if st.session_state["step"] == 1:
