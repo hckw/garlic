@@ -44,16 +44,40 @@ class GarlicDetector:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.confidence_threshold = confidence_threshold
         self.label_map = label_map or {1: "garlic_root"}
-        # Always build with pretrained weights first, then load custom weights if available
-        self.model = self._build_model(num_classes=len(self.label_map) + 1, use_pretrained=True)
-        if weights_path and Path(weights_path).exists():
-            try:
-                self._load_weights(weights_path)
-            except Exception as e:
-                print(f"Warning: Could not load weights from {weights_path}: {e}. Using pretrained model.")
-        self.model.to(self.device)
-        self.model.eval()
+        self.weights_path = weights_path
+        self.model = None  # Lazy initialization
         self.transform = transforms.Compose([transforms.ToTensor()])
+        print(f"GarlicDetector initialized (device: {self.device}, weights: {weights_path})")
+    
+    def _ensure_model_loaded(self) -> None:
+        """Lazy load the model only when needed."""
+        if self.model is not None:
+            return
+        
+        try:
+            print("🔧 Loading Faster R-CNN model...")
+            # Always build with pretrained weights first, then load custom weights if available
+            self.model = self._build_model(num_classes=len(self.label_map) + 1, use_pretrained=True)
+            
+            if self.weights_path and Path(self.weights_path).exists():
+                try:
+                    print(f"📦 Loading custom weights from {self.weights_path}...")
+                    self._load_weights(self.weights_path)
+                    print("✅ Custom weights loaded successfully")
+                except Exception as e:
+                    print(f"⚠️ Warning: Could not load weights from {self.weights_path}: {e}. Using pretrained model.")
+            else:
+                print("ℹ️ No custom weights provided, using pretrained model")
+            
+            print(f"📤 Moving model to {self.device}...")
+            self.model.to(self.device)
+            self.model.eval()
+            print("✅ Model loaded and ready for inference")
+        except Exception as e:
+            print(f"❌ Error loading model: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     def _build_model(self, num_classes: int, use_pretrained: bool = True):
         weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT if use_pretrained else None
@@ -72,6 +96,9 @@ class GarlicDetector:
         self.model.load_state_dict(state_dict)
 
     def detect(self, image_path: Path) -> List[DetectionResult]:
+        # Ensure model is loaded before detection
+        self._ensure_model_loaded()
+        
         image = Image.open(image_path).convert("RGB")
         tensor = self.transform(image).to(self.device)
 
