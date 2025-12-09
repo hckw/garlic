@@ -61,10 +61,18 @@ class ImageStore:
 
 store = ImageStore()
 app = FastAPI(title="Garlic Detector API", version="0.1.0")
-detector = GarlicDetector(
-    weights_path=os.getenv("GARLIC_MODEL_WEIGHTS"),
-    confidence_threshold=float(os.getenv("GARLIC_CONFIDENCE_THRESHOLD", "0.5")),
-)
+
+# Initialize detector with error handling
+try:
+    detector = GarlicDetector(
+        weights_path=os.getenv("GARLIC_MODEL_WEIGHTS"),
+        confidence_threshold=float(os.getenv("GARLIC_CONFIDENCE_THRESHOLD", "0.5")),
+    )
+    print("✅ GarlicDetector initialized successfully")
+except Exception as e:
+    print(f"⚠️ Warning: Could not initialize GarlicDetector: {e}")
+    print("⚠️ Using fallback - detector will be initialized on first use")
+    detector = None
 
 # CORS configuration - update with your Netlify domain in production
 allowed_origins = os.getenv(
@@ -210,11 +218,51 @@ def _annotate_with_detections(original_path: Path, annotated_path: Path, detecti
 
 async def _process_with_model(image_id: str, record: ImageRecord) -> None:
     annotated_path = ANNOTATED_DIR / f"{Path(record.original_path).stem}_annotated.png"
+    
+    # Ensure annotated directory exists
+    ANNOTATED_DIR.mkdir(parents=True, exist_ok=True)
+    
     store.update(image_id, status="processing", history=record.history + ["processing"])
 
-    detection_results = await asyncio.to_thread(detector.detect, record.original_path)
-    detection_dicts = [result.to_dict() for result in detection_results]
-    _annotate_with_detections(record.original_path, annotated_path, detection_dicts)
+    # Initialize detector if not already initialized
+    global detector
+    if detector is None:
+        try:
+            print(f"🔧 Initializing GarlicDetector...")
+            detector = GarlicDetector(
+                weights_path=os.getenv("GARLIC_MODEL_WEIGHTS"),
+                confidence_threshold=float(os.getenv("GARLIC_CONFIDENCE_THRESHOLD", "0.5")),
+            )
+            print("✅ GarlicDetector initialized successfully")
+        except Exception as e:
+            print(f"❌ Error initializing detector: {e}")
+            import traceback
+            traceback.print_exc()
+            store.update(image_id, status="uploaded", history=record.history + ["processing", "error"])
+            raise HTTPException(status_code=500, detail=f"Failed to initialize detector: {str(e)}")
+
+    try:
+        print(f"🔍 Running detection on {record.original_path}...")
+        detection_results = await asyncio.to_thread(detector.detect, record.original_path)
+        print(f"✅ Detection completed: {len(detection_results)} detections found")
+    except Exception as e:
+        print(f"❌ Error during detection: {e}")
+        import traceback
+        traceback.print_exc()
+        store.update(image_id, status="uploaded", history=record.history + ["processing", "error"])
+        raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
+    
+    try:
+        detection_dicts = [result.to_dict() for result in detection_results]
+        print(f"📝 Annotating image...")
+        _annotate_with_detections(record.original_path, annotated_path, detection_dicts)
+        print(f"✅ Annotation saved to {annotated_path}")
+    except Exception as e:
+        print(f"❌ Error during annotation: {e}")
+        import traceback
+        traceback.print_exc()
+        store.update(image_id, status="uploaded", history=record.history + ["processing", "error"])
+        raise HTTPException(status_code=500, detail=f"Annotation failed: {str(e)}")
 
     store.update(
         image_id,
@@ -223,6 +271,7 @@ async def _process_with_model(image_id: str, record: ImageRecord) -> None:
         detections=detection_dicts,
         history=record.history + ["processing", "completed"],
     )
+    print(f"✅ Processing completed for {image_id}")
 
 
 @app.post("/api/upload", response_model=UploadResponse)
@@ -249,8 +298,23 @@ async def process_image(image_id: str):
     if record.status == "completed":
         return ProcessResponse(image_id=image_id, status=record.status, message="Already processed")
 
-    await _process_with_model(image_id, record)
-    return ProcessResponse(image_id=image_id, status="completed", message="Processing finished")
+    # Verify image file exists
+    if not record.original_path.exists():
+        raise HTTPException(status_code=400, detail=f"Image file not found: {record.original_path}")
+
+    try:
+        await _process_with_model(image_id, record)
+        return ProcessResponse(image_id=image_id, status="completed", message="Processing finished")
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        # Catch any unexpected errors to prevent crashes
+        print(f"❌ Unexpected error in process_image: {e}")
+        import traceback
+        traceback.print_exc()
+        store.update(image_id, status="uploaded", history=record.history + ["processing", "error"])
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 
 @app.get("/api/result/{image_id}", response_model=ResultResponse)
@@ -312,6 +376,21 @@ async def submit_feedback(payload: FeedbackRequest):
         reject_count=new_reject_count,
         message="We will reprocess this image for you.",
     )
+
+
+@app.get("/")
+async def root():
+    return {
+        "message": "Garlic Detector API",
+        "version": "0.1.0",
+        "endpoints": {
+            "health": "/health",
+            "upload": "/api/upload",
+            "process": "/api/process/{image_id}",
+            "result": "/api/result/{image_id}",
+            "feedback": "/api/feedback"
+        }
+    }
 
 
 @app.get("/health")
