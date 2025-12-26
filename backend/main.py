@@ -7,20 +7,22 @@ from datetime import datetime
 import os
 from pathlib import Path
 from threading import Lock
-from typing import Dict, Literal, Optional, List
+from typing import Dict, Literal, Optional, List, Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image, ImageDraw, ImageFont
 
-# Lazy import to avoid startup issues if inference_sdk has dependency problems
+# Import detector - if this fails, the app will start but detection won't work
 try:
     from .model.inference import GarlicDetector
+    _DETECTOR_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️ Warning: Could not import GarlicDetector: {e}")
     print("⚠️ App will start but detection will fail until this is resolved")
     GarlicDetector = None  # type: ignore
+    _DETECTOR_AVAILABLE = False
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 UPLOAD_DIR = ROOT_DIR / "data" / "uploads"
@@ -69,7 +71,7 @@ store = ImageStore()
 app = FastAPI(title="Garlic Detector API", version="0.1.0")
 
 # Detector will be initialized lazily on first use to avoid startup delays
-detector: Optional[GarlicDetector] = None
+detector: Optional[Any] = None
 
 # CORS configuration - update with your Netlify domain in production
 allowed_origins = os.getenv(
