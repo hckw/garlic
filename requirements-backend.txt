@@ -1,10 +1,8 @@
-# Backend dependencies (for FastAPI/Railway)
+# Backend dependencies (FastAPI + Roboflow client)
 fastapi==0.115.0
 uvicorn==0.30.6
 python-multipart==0.0.9
 pillow==10.4.0
-# Use CPU-only PyTorch to reduce image size (Railway free tier limit: 4GB)
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.4.1+cpu
-torchvision==0.19.1+cpu
+requests==2.32.3
+inference-sdk==0.9.14
 

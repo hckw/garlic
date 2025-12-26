@@ -62,13 +62,15 @@ class ImageStore:
 store = ImageStore()
 app = FastAPI(title="Garlic Detector API", version="0.1.0")
 
-# Initialize detector with error handling
+# Initialize detector with error handling (Roboflow)
 try:
     detector = GarlicDetector(
-        weights_path=os.getenv("GARLIC_MODEL_WEIGHTS"),
+        api_key=os.getenv("ROBOFLOW_API_KEY"),
+        model_id=os.getenv("ROBOFLOW_MODEL_ID"),
+        version=os.getenv("ROBOFLOW_MODEL_VERSION"),
         confidence_threshold=float(os.getenv("GARLIC_CONFIDENCE_THRESHOLD", "0.5")),
     )
-    print("✅ GarlicDetector initialized successfully")
+    print("✅ GarlicDetector initialized successfully (Roboflow)")
 except Exception as e:
     print(f"⚠️ Warning: Could not initialize GarlicDetector: {e}")
     print("⚠️ Using fallback - detector will be initialized on first use")
@@ -222,24 +224,29 @@ async def _process_with_model(image_id: str, record: ImageRecord) -> None:
     # Ensure annotated directory exists
     ANNOTATED_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Status is already set to "processing" by the endpoint, so we don't need to update it here
+    # Mark as processing
+    store.update(image_id, status="processing", history=record.history + ["processing"])
 
     # Initialize detector if not already initialized
     global detector
     if detector is None:
         try:
-            print(f"🔧 Initializing GarlicDetector...")
+            print(f"🔧 Initializing GarlicDetector instance...")
             detector = GarlicDetector(
-                weights_path=os.getenv("GARLIC_MODEL_WEIGHTS"),
+                api_key=os.getenv("ROBOFLOW_API_KEY"),
+                model_id=os.getenv("ROBOFLOW_MODEL_ID"),
+                version=os.getenv("ROBOFLOW_MODEL_VERSION"),
                 confidence_threshold=float(os.getenv("GARLIC_CONFIDENCE_THRESHOLD", "0.5")),
             )
-            print("✅ GarlicDetector initialized successfully")
+            print("✅ GarlicDetector instance created successfully (Roboflow)")
         except Exception as e:
             print(f"❌ Error initializing detector: {e}")
             import traceback
             traceback.print_exc()
             store.update(image_id, status="uploaded", history=record.history + ["processing", "error"])
             raise HTTPException(status_code=500, detail=f"Failed to initialize detector: {str(e)}")
+    else:
+        print(f"✅ Reusing existing GarlicDetector instance (model loaded: {detector.model is not None})")
 
     try:
         print(f"🔍 Running detection on {record.original_path}...")
@@ -298,34 +305,22 @@ async def process_image(image_id: str):
     if record.status == "completed":
         return ProcessResponse(image_id=image_id, status=record.status, message="Already processed")
 
-    # If already processing, return current status
-    if record.status == "processing":
-        return ProcessResponse(image_id=image_id, status="processing", message="Processing in progress...")
-
     # Verify image file exists
     if not record.original_path.exists():
         raise HTTPException(status_code=400, detail=f"Image file not found: {record.original_path}")
 
-    # Start processing in background (non-blocking)
-    # Return immediately with "processing" status
+    # Run processing synchronously so the caller gets the result or an error
     try:
-        # Update status to processing before starting background task
-        store.update(image_id, status="processing", history=record.history + ["processing"])
-        
-        # Use asyncio.create_task to run in background
-        asyncio.create_task(_process_with_model(image_id, record))
-        return ProcessResponse(
-            image_id=image_id, 
-            status="processing", 
-            message="Processing started. Poll /api/result/{image_id} for completion."
-        )
+        await _process_with_model(image_id, record)
+        return ProcessResponse(image_id=image_id, status="completed", message="Processing finished")
+    except HTTPException:
+        raise
     except Exception as e:
-        # Catch any unexpected errors to prevent crashes
-        print(f"❌ Unexpected error starting process_image: {e}")
+        print(f"❌ Unexpected error in process_image: {e}")
         import traceback
         traceback.print_exc()
         store.update(image_id, status="uploaded", history=record.history + ["processing", "error"])
-        raise HTTPException(status_code=500, detail=f"Failed to start processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 
 @app.get("/api/result/{image_id}", response_model=ResultResponse)

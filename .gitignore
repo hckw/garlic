@@ -25,3 +25,6 @@ models/
 # MacOS metadata
 .DS_Store
 
+# Local environment variables
+.env
+

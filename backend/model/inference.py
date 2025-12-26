@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import torch
+from inference_sdk import InferenceHTTPClient
 from PIL import Image
-from torchvision import transforms
-from torchvision.models.detection import fasterrcnn_resnet50_fpn, FasterRCNN_ResNet50_FPN_Weights
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
 
 @dataclass
@@ -30,111 +27,48 @@ class DetectionResult:
 
 class GarlicDetector:
     """
-    Wrapper around a Faster R-CNN backbone for garlic-root detection.
-    The detector expects Pascal VOC-style training; provide a weights_path
-    after you fine-tune on your dataset.
+    Detector that calls Roboflow Hosted Inference API via inference-sdk.
+
+    Required env vars:
+      - ROBOFLOW_API_KEY
+      - ROBOFLOW_MODEL_ID        (e.g., "garlic-root-detection")
+      - ROBOFLOW_MODEL_VERSION   (e.g., "1")
+    Optional:
+      - ROBOFLOW_API_URL         (default: https://serverless.roboflow.com)
     """
 
     def __init__(
         self,
-        weights_path: Optional[str] = None,
+        api_key: Optional[str] = None,
+        model_id: Optional[str] = None,
+        version: Optional[str] = None,
         confidence_threshold: float = 0.5,
-        label_map: Optional[Dict[int, str]] = None,
+        api_url: Optional[str] = None,
     ) -> None:
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.api_key = api_key or os.getenv("ROBOFLOW_API_KEY")
+        self.model_id = model_id or os.getenv("ROBOFLOW_MODEL_ID")
+        self.version = version or os.getenv("ROBOFLOW_MODEL_VERSION", "1")
         self.confidence_threshold = confidence_threshold
-        self.label_map = label_map or {1: "garlic_root"}
-        self.weights_path = weights_path
-        self.model = None  # Lazy initialization
-        self.transform = transforms.Compose([transforms.ToTensor()])
-        print(f"GarlicDetector initialized (device: {self.device}, weights: {weights_path})")
-    
-    def _ensure_model_loaded(self) -> None:
-        """Lazy load the model only when needed."""
-        if self.model is not None:
-            return
-        
-        try:
-            print("🔧 Loading Faster R-CNN model...")
-            # Always build with pretrained weights first, then load custom weights if available
-            self.model = self._build_model(num_classes=len(self.label_map) + 1, use_pretrained=True)
-            
-            if self.weights_path and Path(self.weights_path).exists():
-                try:
-                    print(f"📦 Loading custom weights from {self.weights_path}...")
-                    self._load_weights(self.weights_path)
-                    print("✅ Custom weights loaded successfully")
-                except Exception as e:
-                    print(f"⚠️ Warning: Could not load weights from {self.weights_path}: {e}. Using pretrained model.")
-            else:
-                print("ℹ️ No custom weights provided, using pretrained model")
-            
-            print(f"📤 Moving model to {self.device}...")
-            self.model.to(self.device)
-            self.model.eval()
-            print("✅ Model loaded and ready for inference")
-        except Exception as e:
-            print(f"❌ Error loading model: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
+        self.api_url = api_url or os.getenv("ROBOFLOW_API_URL", "https://serverless.roboflow.com")
 
-    def _build_model(self, num_classes: int, use_pretrained: bool = True):
-        weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT if use_pretrained else None
-        model = fasterrcnn_resnet50_fpn(weights=weights)
-        in_features = model.roi_heads.box_predictor.cls_score.in_features
-        model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-        return model
+        if not self.api_key or not self.model_id:
+            raise ValueError("ROBOFLOW_API_KEY and ROBOFLOW_MODEL_ID must be set.")
 
-    def _load_weights(self, weights_path: str) -> None:
-        path = Path(weights_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Model weights not found at {path}")
-        state_dict = torch.load(path, map_location=self.device)
-        if isinstance(state_dict, dict) and "model" in state_dict:
-            state_dict = state_dict["model"]
-        self.model.load_state_dict(state_dict)
+        # Model reference for inference-sdk: allow either full "model/version" in MODEL_ID,
+        # or separate MODEL_ID + MODEL_VERSION.
+        if "/" in self.model_id:
+            self.model_ref = self.model_id
+        else:
+            self.model_ref = f"{self.model_id}/{self.version}"
 
-    def detect(self, image_path: Path) -> List[DetectionResult]:
-        # Ensure model is loaded before detection
-        self._ensure_model_loaded()
-        
-        image = Image.open(image_path).convert("RGB")
-        tensor = self.transform(image).to(self.device)
-
-        with torch.no_grad():
-            outputs = self.model([tensor])[0]
-
-        detections: List[DetectionResult] = []
-        width, height = image.size
-
-        for bbox, score, label_idx in zip(
-            outputs["boxes"], outputs["scores"], outputs["labels"]
-        ):
-            confidence = float(score.cpu().item())
-            if confidence < self.confidence_threshold:
-                continue
-
-            label_name = self.label_map.get(int(label_idx.cpu().item()), "garlic_root")
-            bbox_array = bbox.cpu().tolist()
-            bbox_dict = {
-                "x_min": float(bbox_array[0]),
-                "y_min": float(bbox_array[1]),
-                "x_max": float(bbox_array[2]),
-                "y_max": float(bbox_array[3]),
-            }
-            robot_coords = self._estimate_robot_coords(bbox_dict, width, height)
-
-            detections.append(
-                DetectionResult(
-                    label=label_name,
-                    confidence=confidence,
-                    bbox=bbox_dict,
-                    robot_coords=robot_coords,
-                )
-            )
-
-        return detections
+        self.client = InferenceHTTPClient(
+            api_url=self.api_url,
+            api_key=self.api_key,
+        )
+        print(
+            f"GarlicDetector configured for Roboflow model "
+            f"{self.model_ref} via {self.api_url} (threshold={self.confidence_threshold})"
+        )
 
     def _estimate_robot_coords(
         self, bbox: Dict[str, float], width: int, height: int
@@ -150,4 +84,54 @@ class GarlicDetector:
             "y": round(normalized_y, 4),
             "z": 0.0,  # placeholder until depth calibration is available
         }
+
+    def _bbox_from_prediction(self, pred: Dict[str, float]) -> Dict[str, float]:
+        # Roboflow returns center x/y and width/height in pixels
+        x_center = float(pred.get("x", 0.0))
+        y_center = float(pred.get("y", 0.0))
+        w = float(pred.get("width", 0.0))
+        h = float(pred.get("height", 0.0))
+
+        x_min = x_center - w / 2
+        x_max = x_center + w / 2
+        y_min = y_center - h / 2
+        y_max = y_center + h / 2
+
+        return {
+            "x_min": x_min,
+            "y_min": y_min,
+            "x_max": x_max,
+            "y_max": y_max,
+        }
+
+    def detect(self, image_path: Path) -> List[DetectionResult]:
+        # Load image to get dimensions (for robot coords)
+        image = Image.open(image_path).convert("RGB")
+        width, height = image.size
+
+        # inference-sdk handles file upload internally
+        data = self.client.infer(str(image_path), model_id=self.model_ref)
+
+        # Roboflow may return "predictions" or "objects" depending on model type
+        predictions = data.get("predictions", []) or data.get("objects", [])
+        detections: List[DetectionResult] = []
+
+        for pred in predictions:
+            confidence = float(pred.get("confidence", 0.0))
+            if confidence < self.confidence_threshold:
+                continue
+
+            bbox = self._bbox_from_prediction(pred)
+            robot_coords = self._estimate_robot_coords(bbox, width, height)
+
+            detections.append(
+                DetectionResult(
+                    label=str(pred.get("class", "object")),
+                    confidence=confidence,
+                    bbox=bbox,
+                    robot_coords=robot_coords,
+                )
+            )
+
+        return detections
 
