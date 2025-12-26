@@ -9,7 +9,7 @@
 1. **Capture / Upload**: User supplies image via camera or file upload and sends it to backend `/api/upload`. Backend stores the image and returns an `image_id`.
 2. **Process**: Streamlit triggers `/api/process/{image_id}`. Backend simulates model processing (placeholder) and produces annotated image artifact.
 3. **Review Output**: Streamlit retrieves `/api/result/{image_id}` to display annotated garlic image to user.
-4. **Feedback**: Streamlit calls `/api/feedback` with Accept/Reject. Backend tracks reject count per `image_id` and instructs UI to either reprocess (<=5 rejects) or reset to Step 1 (>5 rejects) while showing warning popup.
+4. **Feedback**: Streamlit calls `/api/feedback` with Accept/Reject. Backend tracks reject count per `image_id` and instructs UI to either reprocess (<=2 rejects) or reset to Step 1 (>2 rejects) while showing warning popup.
 
 ## Backend Components
 - `backend/main.py`: FastAPI app with CORS, in-memory `ImageStore` that tracks metadata.
@@ -24,7 +24,7 @@
 - `frontend/app.py` (Streamlit): manages `st.session_state` for `step`, `image_id`, `reject_count`.
 - Step components encapsulated in helper functions for clarity.
 - Uses `requests` to call backend and `st.progress` for Step 2 progress bar.
-- Implements popup-like warning via `st.dialog` (Streamlit >=1.28) triggered when backend instructs `reset` after >5 rejects.
+- Implements popup-like warning via `st.dialog` (Streamlit >=1.28) triggered when backend instructs `reset` after >2 rejects.
 
 ## Future Backend Integration Points
 - Replace simulated annotation in `/api/process` with actual AI pipeline invocation.

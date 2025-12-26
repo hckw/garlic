@@ -246,7 +246,7 @@ async def _process_with_model(image_id: str, record: ImageRecord) -> None:
             store.update(image_id, status="uploaded", history=record.history + ["processing", "error"])
             raise HTTPException(status_code=500, detail=f"Failed to initialize detector: {str(e)}")
     else:
-        print(f"✅ Reusing existing GarlicDetector instance (model loaded: {detector.model is not None})")
+        print("✅ Reusing existing GarlicDetector instance (Roboflow client already initialized)")
 
     try:
         print(f"🔍 Running detection on {record.original_path}...")
@@ -363,14 +363,14 @@ async def submit_feedback(payload: FeedbackRequest):
     new_reject_count = record.reject_count + 1
     store.update(payload.image_id, reject_count=new_reject_count)
 
-    if new_reject_count > 5:
+    if new_reject_count > 2:
         store.update(payload.image_id, status="needs_new_image")
         return FeedbackResponse(
             image_id=payload.image_id,
             action="reset",
             reject_count=new_reject_count,
             message=(
-                "You’ve rejected this image more than 5 times. It may be unsuitable for detection. "
+                "You've rejected this image more than 2 times. It may be unsuitable for detection. "
                 "Please upload a clearer image."
             ),
         )
