@@ -62,19 +62,8 @@ class ImageStore:
 store = ImageStore()
 app = FastAPI(title="Garlic Detector API", version="0.1.0")
 
-# Initialize detector with error handling (Roboflow)
-try:
-    detector = GarlicDetector(
-        api_key=os.getenv("ROBOFLOW_API_KEY"),
-        model_id=os.getenv("ROBOFLOW_MODEL_ID"),
-        version=os.getenv("ROBOFLOW_MODEL_VERSION"),
-        confidence_threshold=float(os.getenv("GARLIC_CONFIDENCE_THRESHOLD", "0.5")),
-    )
-    print("✅ GarlicDetector initialized successfully (Roboflow)")
-except Exception as e:
-    print(f"⚠️ Warning: Could not initialize GarlicDetector: {e}")
-    print("⚠️ Using fallback - detector will be initialized on first use")
-    detector = None
+# Detector will be initialized lazily on first use to avoid startup delays
+detector: Optional[GarlicDetector] = None
 
 # CORS configuration - update with your Netlify domain in production
 allowed_origins = os.getenv(

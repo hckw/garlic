@@ -26,5 +26,6 @@ COPY backend/ ./backend/
 EXPOSE 8000
 
 # Run the application (use shell form to expand PORT env var)
-CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Use PYTHONUNBUFFERED=1 to ensure logs appear immediately in Railway
+CMD ["sh", "-c", "PYTHONUNBUFFERED=1 uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
 
