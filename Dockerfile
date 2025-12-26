@@ -28,7 +28,7 @@ EXPOSE 8000
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Run the application - use shell form to properly expand PORT env var
+# Run the application - use shell form (no brackets) to properly expand PORT env var
 # Railway provides PORT as an environment variable
-CMD exec uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}
 
