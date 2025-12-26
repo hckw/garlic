@@ -14,7 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image, ImageDraw, ImageFont
 
-from .model.inference import GarlicDetector
+# Lazy import to avoid startup issues if inference_sdk has dependency problems
+try:
+    from .model.inference import GarlicDetector
+except ImportError as e:
+    print(f"⚠️ Warning: Could not import GarlicDetector: {e}")
+    print("⚠️ App will start but detection will fail until this is resolved")
+    GarlicDetector = None  # type: ignore
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 UPLOAD_DIR = ROOT_DIR / "data" / "uploads"
@@ -390,4 +396,13 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "detector_available": detector is not None}
+
+
+@app.on_event("startup")
+async def startup_event():
+    print("🚀 FastAPI app starting up...")
+    print(f"✅ App initialized successfully")
+    print(f"📁 Upload directory: {UPLOAD_DIR}")
+    print(f"📁 Annotated directory: {ANNOTATED_DIR}")
+    print(f"🔍 Detector will be initialized on first use")
