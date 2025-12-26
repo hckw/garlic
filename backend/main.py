@@ -15,11 +15,15 @@ from pydantic import BaseModel
 from PIL import Image, ImageDraw, ImageFont
 
 # Import detector - if this fails, the app will start but detection won't work
+# Catch all exceptions (not just ImportError) since inference_sdk might raise different errors
 try:
     from .model.inference import GarlicDetector
     _DETECTOR_AVAILABLE = True
-except ImportError as e:
-    print(f"⚠️ Warning: Could not import GarlicDetector: {e}")
+    print("✅ GarlicDetector import successful")
+except Exception as e:
+    print(f"⚠️ Warning: Could not import GarlicDetector: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
     print("⚠️ App will start but detection will fail until this is resolved")
     GarlicDetector = None  # type: ignore
     _DETECTOR_AVAILABLE = False
