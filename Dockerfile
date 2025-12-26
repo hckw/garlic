@@ -22,13 +22,15 @@ RUN pip install --no-cache-dir -r requirements-backend.txt
 # Copy application code
 COPY backend/ ./backend/
 
+# Copy startup script
+COPY run.py ./
+
 # Expose port (Railway will set PORT env var)
 EXPOSE 8000
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Run the application - use shell form (no brackets) to properly expand PORT env var
-# Railway provides PORT as an environment variable
-CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Run the application using Python script (avoids shell variable expansion issues)
+CMD python run.py
 
