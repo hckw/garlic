@@ -44,6 +44,9 @@ def init_session_state() -> None:
         "last_feedback_message": "",
         "reject_popup_message": "",
         "reject_popup_timestamp": None,
+        "mode": None,  # "automatic" or "feedback" - None means not selected yet
+        "mode_selected": False,
+        "auto_mode_timer_start": None,  # When to start 5-second countdown in automatic mode
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -85,13 +88,16 @@ def submit_feedback(image_id: str, decision: str) -> dict:
     return api_post("/api/feedback", json=payload)
 
 
-def step_indicator(current_step: int) -> None:
+def step_indicator(current_step: int, mode: str = "feedback") -> None:
     steps = [
         "1. Capture or Upload",
         "2. Send to AI",
         "3. Review Result",
-        "4. Provide Feedback",
     ]
+    # Only show step 4 in feedback mode
+    if mode == "feedback":
+        steps.append("4. Provide Feedback")
+    
     cols = st.columns(len(steps))
     for idx, label in enumerate(steps, start=1):
         with cols[idx - 1]:
@@ -201,11 +207,33 @@ def handle_step_three() -> None:
         caption="AI annotated garlic detection",
         use_column_width=True,
     )
-    st.info("Inspect the annotations carefully before sending your feedback.")
-
-    if st.button("Continue to feedback", type="primary"):
-        st.session_state["step"] = 4
-        st.rerun()
+    
+    mode = st.session_state.get("mode", "feedback")
+    
+    if mode == "automatic":
+        # Automatic mode: show for 5 seconds then auto-return to step 1
+        if st.session_state.get("auto_mode_timer_start") is None:
+            st.session_state["auto_mode_timer_start"] = time.time()
+            st.info("🤖 Automatic mode: Result will be shown for 5 seconds, then returning to capture new image...")
+        else:
+            elapsed = time.time() - st.session_state["auto_mode_timer_start"]
+            remaining = max(0, 5 - elapsed)
+            if remaining > 0:
+                st.info(f"🤖 Automatic mode: Returning to capture in {int(remaining)} seconds...")
+                time.sleep(0.5)  # Update display every 0.5 seconds
+                st.rerun()
+            else:
+                # 5 seconds passed, return to step 1
+                st.session_state["auto_mode_timer_start"] = None
+                st.session_state["annotated_image"] = None
+                reset_to_step(1)
+                st.rerun()
+    else:
+        # Feedback mode: show button to continue to feedback
+        st.info("Inspect the annotations carefully before sending your feedback.")
+        if st.button("Continue to feedback", type="primary"):
+            st.session_state["step"] = 4
+            st.rerun()
 
 
 def handle_step_four() -> None:
@@ -242,12 +270,41 @@ def handle_step_four() -> None:
         st.caption(st.session_state["last_feedback_message"])
 
 
+def show_mode_selection() -> None:
+    """Show mode selection dialog before starting the workflow."""
+    if st.session_state.get("mode_selected", False):
+        return
+    
+    st.info("🔄 **Select your workflow mode:**")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("🤖 **Automatic Mode**", use_container_width=True, type="primary"):
+            st.session_state["mode"] = "automatic"
+            st.session_state["mode_selected"] = True
+            st.rerun()
+        st.caption("Images are processed automatically and shown for 5 seconds before capturing the next image. No feedback step.")
+    
+    with col2:
+        if st.button("💬 **Feedback Mode**", use_container_width=True):
+            st.session_state["mode"] = "feedback"
+            st.session_state["mode_selected"] = True
+            st.rerun()
+        st.caption("Standard workflow with manual feedback. You can accept or reject results.")
+
+
 def main() -> None:
     st.set_page_config(page_title="Garlic AI Dashboard", page_icon="🧄", layout="wide")
     st.title("Garlic AI Workflow Dashboard")
     st.caption("Guide your garlic images through the AI detection pipeline.")
 
     init_session_state()
+    
+    # Show mode selection if not selected yet
+    if not st.session_state.get("mode_selected", False):
+        show_mode_selection()
+        return  # Don't proceed until mode is selected
     
     # Show popup message for 10 seconds
     if st.session_state.get("reject_popup_message") and st.session_state.get("reject_popup_timestamp"):
@@ -274,7 +331,18 @@ def main() -> None:
             # 10 seconds passed, clear the message
             st.session_state["reject_popup_message"] = ""
             st.session_state["reject_popup_timestamp"] = None
-    step_indicator(st.session_state["step"])
+    
+    # Show current mode indicator
+    mode = st.session_state.get("mode", "feedback")
+    mode_label = "🤖 Automatic Mode" if mode == "automatic" else "💬 Feedback Mode"
+    st.sidebar.info(f"**Current Mode:** {mode_label}")
+    if st.sidebar.button("🔄 Change Mode"):
+        st.session_state["mode_selected"] = False
+        st.session_state["mode"] = None
+        reset_to_step(1)
+        st.rerun()
+    
+    step_indicator(st.session_state["step"], mode=mode)
 
     if st.session_state["step"] == 1:
         image_bytes = show_step_one()
@@ -302,7 +370,14 @@ def main() -> None:
         except requests.RequestException as exc:
             st.error(f"Unable to fetch result: {exc}")
     elif st.session_state["step"] == 4:
-        handle_step_four()
+        # Only show step 4 in feedback mode
+        current_mode = st.session_state.get("mode", "feedback")
+        if current_mode == "feedback":
+            handle_step_four()
+        else:
+            # Shouldn't reach here in automatic mode, but handle gracefully
+            reset_to_step(1)
+            st.rerun()
 
 
 if __name__ == "__main__":
