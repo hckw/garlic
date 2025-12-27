@@ -47,6 +47,7 @@ def init_session_state() -> None:
         "mode": None,  # "automatic" or "feedback" - None means not selected yet
         "mode_selected": False,
         "auto_mode_timer_start": None,  # When to start 5-second countdown in automatic mode
+        "step1_reset_counter": 0,  # Counter to reset camera/file uploader widgets
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -66,6 +67,14 @@ def reset_to_step(step: int = 1) -> None:
     )
     if step == 1:
         st.session_state["reject_count"] = 0
+        # Increment counter to reset camera/file uploader widgets
+        st.session_state["step1_reset_counter"] = st.session_state.get("step1_reset_counter", 0) + 1
+        # Clear all image-related state when returning to step 1
+        st.session_state["image_preview"] = None
+        st.session_state["image_filename"] = None
+        st.session_state["image_id"] = None
+        st.session_state["processing_started"] = None
+        st.session_state["processing_status"] = None
 
 
 def upload_image_to_api(image_bytes: bytes, filename: str) -> tuple[str, str]:
@@ -109,9 +118,11 @@ def show_step_one() -> Optional[bytes]:
     st.subheader("Step 1 · Capture or upload a garlic image")
     st.write("Use your camera or upload an existing picture of garlic for the AI to inspect.")
 
-    camera_image = st.camera_input("Capture using camera", key="camera_input")
+    # Use counter in key to reset widgets when returning to step 1
+    reset_counter = st.session_state.get("step1_reset_counter", 0)
+    camera_image = st.camera_input("Capture using camera", key=f"camera_input_{reset_counter}")
     uploaded_file = st.file_uploader(
-        "Or upload an image file (PNG, JPG)", type=["png", "jpg", "jpeg"], key="file_uploader"
+        "Or upload an image file (PNG, JPG)", type=["png", "jpg", "jpeg"], key=f"file_uploader_{reset_counter}"
     )
 
     image_bytes: Optional[bytes] = None
@@ -134,7 +145,7 @@ def show_step_one() -> Optional[bytes]:
 
 def handle_step_two() -> None:
     st.subheader("Step 2 · Send to the AI model")
-    st.write("We are processing your image. This may take a minute or two, especially on first use (model loading).")
+    st.write("We are processing your image. This may take maximum a minute.")
 
     # Start processing (returns immediately)
     if st.session_state.get("processing_started") is None:
@@ -215,6 +226,9 @@ def handle_step_three() -> None:
         if st.session_state.get("auto_mode_timer_start") is None:
             st.session_state["auto_mode_timer_start"] = time.time()
             st.info("🤖 Automatic mode: Result will be shown for 5 seconds, then returning to capture new image...")
+            # Trigger rerun to start the countdown
+            time.sleep(0.1)
+            st.rerun()
         else:
             elapsed = time.time() - st.session_state["auto_mode_timer_start"]
             remaining = max(0, 5 - elapsed)
@@ -346,7 +360,23 @@ def main() -> None:
 
     if st.session_state["step"] == 1:
         image_bytes = show_step_one()
-        if image_bytes and st.button("Send to AI", type="primary"):
+        
+        # In automatic mode, immediately send to AI when image is captured/uploaded
+        # Only upload if we haven't already started processing this image
+        if mode == "automatic" and image_bytes and st.session_state.get("image_id") is None:
+            with st.spinner("Uploading image..."):
+                try:
+                    image_id, status = upload_image_to_api(
+                        image_bytes, st.session_state["image_filename"] or "garlic.png"
+                    )
+                    st.session_state["image_id"] = image_id
+                    st.session_state["processing_status"] = status
+                    st.session_state["step"] = 2
+                    st.rerun()
+                except requests.RequestException as exc:
+                    st.error(f"Upload failed: {exc}")
+        # In feedback mode, show button to manually send to AI
+        elif mode == "feedback" and image_bytes and st.button("Send to AI", type="primary"):
             with st.spinner("Uploading image..."):
                 try:
                     image_id, status = upload_image_to_api(
