@@ -174,7 +174,9 @@ def _annotate_image(original_path: Path, annotated_path: Path) -> None:
 
 def _annotate_with_detections(original_path: Path, annotated_path: Path, detections: List[Dict]) -> None:
     if not detections:
-        _annotate_image(original_path, annotated_path)
+        # No detections found - just copy the original image without any annotation
+        image = Image.open(original_path).convert("RGB")
+        image.save(annotated_path)
         return
 
     image = Image.open(original_path).convert("RGB")
@@ -280,14 +282,21 @@ async def _process_with_model(image_id: str, record: ImageRecord, confidence_thr
         store.update(image_id, status="uploaded", history=record.history + ["processing", "error"])
         raise HTTPException(status_code=500, detail=f"Annotation failed: {str(e)}")
 
+    # Check if no detections were found
+    if len(detection_dicts) == 0:
+        status = "no_detections"
+        print(f"⚠️ No detections found for {image_id}")
+    else:
+        status = "completed"
+        print(f"✅ Processing completed for {image_id}")
+
     store.update(
         image_id,
-        status="completed",
+        status=status,
         annotated_path=annotated_path,
         detections=detection_dicts,
-        history=record.history + ["processing", "completed"],
+        history=record.history + ["processing", status],
     )
-    print(f"✅ Processing completed for {image_id}")
 
 
 @app.post("/api/upload", response_model=UploadResponse)

@@ -44,11 +44,15 @@ def init_session_state() -> None:
         "last_feedback_message": "",
         "reject_popup_message": "",
         "reject_popup_timestamp": None,
+        "no_detection_popup_message": "",
+        "no_detection_popup_timestamp": None,
         "mode": None,  # "automatic" or "feedback" - None means not selected yet
         "mode_selected": False,
         "auto_mode_timer_start": None,  # When to start 5-second countdown in automatic mode
         "step1_reset_counter": 0,  # Counter to reset camera/file uploader widgets
         "confidence_threshold": 0.5,  # User-adjustable confidence threshold
+        "detection_status": None,  # Status from detection (completed, no_detections, etc.)
+        "detections": None,  # List of detections from API
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -185,6 +189,14 @@ def handle_step_two() -> None:
                 time.sleep(1)  # Brief pause to show success message
                 st.rerun()
                 return
+            elif result["status"] == "no_detections":
+                # No detections found - show popup and return to step 1
+                progress.progress(100)
+                st.session_state["processing_started"] = None  # Reset for next time
+                st.session_state["no_detection_popup_message"] = "⚠️ No garlic detected. Please capture a new image with garlic visible."
+                st.session_state["no_detection_popup_timestamp"] = time.time()
+                st.rerun()
+                return
             elif result["status"] == "processing":
                 # Still processing, update progress
                 progress_pct = min(90, 10 + (attempt * 2))  # Progress from 10% to 90%
@@ -216,8 +228,19 @@ def handle_step_two() -> None:
 def handle_step_three() -> None:
     st.subheader("Step 3 · Review the AI output")
     if st.session_state["annotated_image"] is None:
-        annotated_bytes = fetch_result(st.session_state["image_id"])
+        result_data = api_get(f"/api/result/{st.session_state['image_id']}")
+        annotated_bytes = base64.b64decode(result_data["annotated_image_base64"])
         st.session_state["annotated_image"] = annotated_bytes
+        st.session_state["detection_status"] = result_data.get("status", "completed")
+        st.session_state["detections"] = result_data.get("detections", [])
+
+    # Check if no detections were found (this should be handled in step 2, but keep as fallback)
+    if st.session_state.get("detection_status") == "no_detections" or len(st.session_state.get("detections", [])) == 0:
+        # This case should be handled by the popup in main(), but if we reach here, show message
+        st.session_state["no_detection_popup_message"] = "⚠️ No garlic detected. Please capture a new image with garlic visible."
+        st.session_state["no_detection_popup_timestamp"] = time.time()
+        st.rerun()
+        return
 
     # Display annotated image in a smaller, centered column
     col_left, col_center, col_right = st.columns([1, 2, 1])
@@ -381,7 +404,88 @@ def main() -> None:
         show_mode_selection()
         return  # Don't proceed until mode is selected
     
-    # Show popup message for 10 seconds
+    # Show popup message for no detection (with close button to return to step 1)
+    if st.session_state.get("no_detection_popup_message") and st.session_state.get("no_detection_popup_timestamp"):
+        # Create a modal popup overlay
+        st.markdown(
+            """
+            <div style="
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background-color: rgba(0, 0, 0, 0.6);
+                z-index: 9998;
+                pointer-events: none;
+            "></div>
+            <div style="
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background-color: white;
+                padding: 40px;
+                border-radius: 15px;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+                border: 3px solid #f5c6cb;
+                z-index: 9999;
+                max-width: 500px;
+                width: 90%;
+                text-align: center;
+                pointer-events: auto;
+            ">
+                <h2 style="color: #721c24; margin-top: 0; margin-bottom: 20px; font-size: 24px;">⚠️ No Garlic Detected</h2>
+                <p style="color: #721c24; margin-bottom: 30px; font-size: 16px;">Please capture a new image with garlic visible.</p>
+            </div>
+            <style>
+                /* Make sure Streamlit button is above the overlay and clickable */
+                /* Target button by finding it after the modal is rendered */
+                div[data-testid="column"] button {
+                    position: fixed !important;
+                    top: calc(50% + 120px) !important;
+                    left: 50% !important;
+                    transform: translate(-50%, -50%) !important;
+                    z-index: 10000 !important;
+                    width: 200px !important;
+                    pointer-events: auto !important;
+                }
+            </style>
+            <script>
+                // Ensure the Close button is clickable and positioned correctly
+                setTimeout(function() {
+                    const buttons = document.querySelectorAll('button');
+                    buttons.forEach(btn => {
+                        if (btn.textContent.trim() === 'Close') {
+                            btn.style.position = 'fixed';
+                            btn.style.top = 'calc(50% + 120px)';
+                            btn.style.left = '50%';
+                            btn.style.transform = 'translate(-50%, -50%)';
+                            btn.style.zIndex = '10000';
+                            btn.style.width = '200px';
+                            btn.style.pointerEvents = 'auto';
+                        }
+                    });
+                }, 100);
+            </script>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        # Streamlit button that will be positioned inside the modal via CSS
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            if st.button("Close", key="close_no_detection_popup", type="primary", use_container_width=True):
+                st.session_state["no_detection_popup_message"] = ""
+                st.session_state["no_detection_popup_timestamp"] = None
+                reset_to_step(1)
+                st.session_state["annotated_image"] = None
+                st.session_state["detection_status"] = None
+                st.session_state["detections"] = None
+                st.session_state["processing_started"] = None
+                st.rerun()
+    
+    # Show popup message for reject (10 seconds auto-close)
     if st.session_state.get("reject_popup_message") and st.session_state.get("reject_popup_timestamp"):
         current_time = time.time()
         elapsed = current_time - st.session_state["reject_popup_timestamp"]
@@ -394,7 +498,7 @@ def main() -> None:
                 icon="⚠️"
             )
             # Add close button
-            if st.button("Close", key="close_popup"):
+            if st.button("Close", key="close_reject_popup"):
                 st.session_state["reject_popup_message"] = ""
                 st.session_state["reject_popup_timestamp"] = None
                 st.rerun()
