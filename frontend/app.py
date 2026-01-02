@@ -17,10 +17,10 @@ _api_url = os.getenv("GARLIC_API_URL", "http://localhost:8000")
 API_BASE_URL = _api_url.rstrip("/")
 
 
-def api_post(endpoint: str, files=None, json=None) -> dict:
+def api_post(endpoint: str, files=None, json=None, params=None) -> dict:
     url = f"{API_BASE_URL}{endpoint}"
     # Process endpoint returns immediately, so short timeout is fine
-    response = requests.post(url, files=files, json=json, timeout=30)
+    response = requests.post(url, files=files, json=json, params=params, timeout=30)
     response.raise_for_status()
     return response.json()
 
@@ -48,6 +48,7 @@ def init_session_state() -> None:
         "mode_selected": False,
         "auto_mode_timer_start": None,  # When to start 5-second countdown in automatic mode
         "step1_reset_counter": 0,  # Counter to reset camera/file uploader widgets
+        "confidence_threshold": 0.5,  # User-adjustable confidence threshold
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -83,8 +84,9 @@ def upload_image_to_api(image_bytes: bytes, filename: str) -> tuple[str, str]:
     return data["image_id"], data["status"]
 
 
-def start_processing(image_id: str) -> dict:
-    return api_post(f"/api/process/{image_id}")
+def start_processing(image_id: str, confidence_threshold: float = 0.5) -> dict:
+    # Pass confidence threshold as query parameter
+    return api_post(f"/api/process/{image_id}", params={"confidence_threshold": confidence_threshold})
 
 
 def fetch_result(image_id: str) -> bytes:
@@ -136,7 +138,10 @@ def show_step_one() -> Optional[bytes]:
         filename = uploaded_file.name
 
     if image_bytes:
-        st.image(image_bytes, caption="Selected image", use_column_width=True)
+        # Display image in a smaller, centered column
+        col_left, col_center, col_right = st.columns([1, 2, 1])
+        with col_center:
+            st.image(image_bytes, caption="Selected image", use_column_width=True)
         st.session_state["image_preview"] = image_bytes
         st.session_state["image_filename"] = filename
 
@@ -150,10 +155,11 @@ def handle_step_two() -> None:
     # Start processing (returns immediately)
     if st.session_state.get("processing_started") is None:
         try:
-            process_response = start_processing(st.session_state["image_id"])
+            confidence_threshold = st.session_state.get("confidence_threshold", 0.5)
+            process_response = start_processing(st.session_state["image_id"], confidence_threshold)
             st.session_state["processing_status"] = process_response["status"]
             st.session_state["processing_started"] = True
-            st.info("Processing started. Waiting for completion...")
+            st.info(f"Processing started with confidence threshold: {confidence_threshold:.2f}. Waiting for completion...")
         except requests.RequestException as exc:
             st.error(f"Failed to start processing: {exc}")
             return
@@ -213,11 +219,14 @@ def handle_step_three() -> None:
         annotated_bytes = fetch_result(st.session_state["image_id"])
         st.session_state["annotated_image"] = annotated_bytes
 
-    st.image(
-        st.session_state["annotated_image"],
-        caption="AI annotated garlic detection",
-        use_column_width=True,
-    )
+    # Display annotated image in a smaller, centered column
+    col_left, col_center, col_right = st.columns([1, 2, 1])
+    with col_center:
+        st.image(
+            st.session_state["annotated_image"],
+            caption="AI annotated garlic detection",
+            use_column_width=True,
+        )
     
     mode = st.session_state.get("mode", "feedback")
     
@@ -289,19 +298,71 @@ def show_mode_selection() -> None:
     if st.session_state.get("mode_selected", False):
         return
     
-    st.info("🔄 **Select your workflow mode:**")
+    # Confidence threshold slider (moved to top)
+    st.markdown("**Confidence Threshold:**")
+    confidence_threshold = st.slider(
+        "Adjust the confidence threshold (0.0 - 1.0). Lower values detect more objects but may include false positives.",
+        min_value=0.0,
+        max_value=1.0,
+        value=st.session_state.get("confidence_threshold", 0.5),
+        step=0.05,
+        key="mode_selection_threshold"
+    )
+    st.session_state["confidence_threshold"] = confidence_threshold
+    
+    # Apply color to slider based on threshold (green above 70%, red below)
+    if confidence_threshold > 0.7:
+        slider_color = "#28a745"  # Green
+    else:
+        slider_color = "#dc3545"  # Red
+    
+    st.markdown(
+        f"""
+        <style>
+        /* Target the StyledThumbValue class for the value number above the slider */
+        .StyledThumbValue {{
+            color: {slider_color} !important;
+        }}
+        /* Also target with emotion cache classes */
+        .st-emotion-cache-10y5sf6 {{
+            color: {slider_color} !important;
+        }}
+        .ew7r33m2 {{
+            color: {slider_color} !important;
+        }}
+        /* Keep stTickBarMin in default color (do not change) */
+        .stTickBarMin {{
+            color: inherit !important;
+            background-color: inherit !important;
+        }}
+        /* Target the slider track filled portion */
+        div[data-testid="stSlider"] div[data-baseweb="slider"] > div > div:first-child {{
+            background: linear-gradient(to right, {slider_color} 0%, {slider_color} {confidence_threshold * 100}%, #d3d3d3 {confidence_threshold * 100}%, #d3d3d3 100%) !important;
+        }}
+        /* Target the slider thumb/handle */
+        div[data-testid="stSlider"] div[data-baseweb="slider"] > div > div > div {{
+            background-color: {slider_color} !important;
+            border-color: {slider_color} !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    
+    st.info("**Select your workflow mode:**")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("🤖 **Automatic Mode**", use_container_width=True, type="primary"):
+        if st.button("**Automatic Mode**", use_container_width=True, type="primary"):
             st.session_state["mode"] = "automatic"
             st.session_state["mode_selected"] = True
             st.rerun()
         st.caption("Images are processed automatically and shown for 5 seconds before capturing the next image. No feedback step.")
     
     with col2:
-        if st.button("💬 **Feedback Mode**", use_container_width=True):
+        if st.button("**Feedback Mode**", use_container_width=True):
             st.session_state["mode"] = "feedback"
             st.session_state["mode_selected"] = True
             st.rerun()
@@ -348,11 +409,12 @@ def main() -> None:
     
     # Show current mode indicator
     mode = st.session_state.get("mode", "feedback")
-    mode_label = "🤖 Automatic Mode" if mode == "automatic" else "💬 Feedback Mode"
+    mode_label = "Automatic Mode" if mode == "automatic" else "Feedback Mode"
     st.sidebar.info(f"**Current Mode:** {mode_label}")
-    if st.sidebar.button("🔄 Change Mode"):
+    if st.sidebar.button("Switch mode"):
         st.session_state["mode_selected"] = False
         st.session_state["mode"] = None
+        st.session_state["confidence_threshold"] = 0.5  # Reset threshold when switching modes
         reset_to_step(1)
         st.rerun()
     

@@ -9,7 +9,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Dict, Literal, Optional, List, Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image, ImageDraw, ImageFont
@@ -219,7 +219,7 @@ def _annotate_with_detections(original_path: Path, annotated_path: Path, detecti
     image.save(annotated_path)
 
 
-async def _process_with_model(image_id: str, record: ImageRecord) -> None:
+async def _process_with_model(image_id: str, record: ImageRecord, confidence_threshold: Optional[float] = None) -> None:
     annotated_path = ANNOTATED_DIR / f"{Path(record.original_path).stem}_annotated.png"
     
     # Ensure annotated directory exists
@@ -228,16 +228,21 @@ async def _process_with_model(image_id: str, record: ImageRecord) -> None:
     # Mark as processing
     store.update(image_id, status="processing", history=record.history + ["processing"])
 
-    # Initialize detector if not already initialized
+    # Use provided confidence threshold or fall back to env var or default
+    threshold = confidence_threshold if confidence_threshold is not None else float(os.getenv("GARLIC_CONFIDENCE_THRESHOLD", "0.5"))
+    print(f"📊 Using confidence threshold: {threshold}")
+
+    # Initialize detector if not already initialized (use low threshold to get all detections, filter later)
     global detector
     if detector is None:
         try:
             print(f"🔧 Initializing GarlicDetector instance...")
+            # Initialize with a low threshold to get all detections, then filter by user threshold
             detector = GarlicDetector(
                 api_key=os.getenv("ROBOFLOW_API_KEY"),
                 model_id=os.getenv("ROBOFLOW_MODEL_ID"),
                 version=os.getenv("ROBOFLOW_MODEL_VERSION"),
-                confidence_threshold=float(os.getenv("GARLIC_CONFIDENCE_THRESHOLD", "0.5")),
+                confidence_threshold=0.0,  # Get all detections, filter later by user threshold
             )
             print("✅ GarlicDetector instance created successfully (Roboflow)")
         except Exception as e:
@@ -252,7 +257,10 @@ async def _process_with_model(image_id: str, record: ImageRecord) -> None:
     try:
         print(f"🔍 Running detection on {record.original_path}...")
         detection_results = await asyncio.to_thread(detector.detect, record.original_path)
-        print(f"✅ Detection completed: {len(detection_results)} detections found")
+        # Filter detections by user-provided confidence threshold
+        original_count = len(detection_results)
+        detection_results = [d for d in detection_results if d.confidence >= threshold]
+        print(f"✅ Detection completed: {len(detection_results)} detections found (after threshold={threshold:.2f} filtering, {original_count} total)")
     except Exception as e:
         print(f"❌ Error during detection: {e}")
         import traceback
@@ -297,7 +305,10 @@ async def upload_image(file: UploadFile = File(...)):
 
 
 @app.post("/api/process/{image_id}", response_model=ProcessResponse)
-async def process_image(image_id: str):
+async def process_image(
+    image_id: str, 
+    confidence_threshold: Optional[float] = Query(None, ge=0.0, le=1.0, description="Confidence threshold (0.0-1.0)")
+):
     try:
         record = store.get(image_id)
     except KeyError:
@@ -312,7 +323,7 @@ async def process_image(image_id: str):
 
     # Run processing synchronously so the caller gets the result or an error
     try:
-        await _process_with_model(image_id, record)
+        await _process_with_model(image_id, record, confidence_threshold)
         return ProcessResponse(image_id=image_id, status="completed", message="Processing finished")
     except HTTPException:
         raise
