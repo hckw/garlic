@@ -323,13 +323,17 @@ def show_mode_selection() -> None:
     
     # Confidence threshold slider (moved to top)
     st.markdown("**Confidence Threshold:**")
+    
+    # Create slider with info icon in the label and help tooltip
+    slider_label = "Adjust the confidence threshold (0.0 - 1.0). Lower values detect more objects but may include false positives. ℹ️"
     confidence_threshold = st.slider(
-        "Adjust the confidence threshold (0.0 - 1.0). Lower values detect more objects but may include false positives.",
+        slider_label,
         min_value=0.0,
         max_value=1.0,
         value=st.session_state.get("confidence_threshold", 0.5),
         step=0.05,
-        key="mode_selection_threshold"
+        key="mode_selection_threshold",
+        help="If no value is provided, the default threshold (0.5) will be applied."
     )
     st.session_state["confidence_threshold"] = confidence_threshold
     
@@ -353,10 +357,11 @@ def show_mode_selection() -> None:
         .ew7r33m2 {{
             color: {slider_color} !important;
         }}
-        /* Keep stTickBarMin in default color (do not change) */
+        /* Remove background color from stTickBarMin */
         .stTickBarMin {{
             color: inherit !important;
-            background-color: inherit !important;
+            background-color: transparent !important;
+            background: none !important;
         }}
         /* Target the slider track filled portion */
         div[data-testid="stSlider"] div[data-baseweb="slider"] > div > div:first-child {{
